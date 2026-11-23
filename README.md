@@ -1,5 +1,16 @@
 # OpenWrt for the Netgear R8000 (Nighthawk X6, BCM4709A0)
 
+> [!CAUTION]
+> **You are on the `experimental/bcm53xx-hw-offload` branch.** It does not
+> build the same thing as `main`: different upstream pin (an unmerged,
+> individual contributor's fork, not official OpenWrt), a newer kernel, and
+> one new, untested, EXPERIMENTAL devicetree patch attempting real hardware
+> packet offload. Nothing on this branch has been built, flashed, or tested
+> on real hardware. Read
+> [docs/experimental-hw-offload-branch.md](docs/experimental-hw-offload-branch.md)
+> in full before building or flashing anything from here. Everything else in
+> this README describes `main`'s behavior, not necessarily this branch's.
+
 OpenWrt built from official upstream (the `openwrt-25.12` branch - `bcm53xx`
 is a mainline-supported target, there is no third-party fork to pin) for the
 **Netgear R8000** only, with two board-specific bug fixes, software flow
@@ -310,7 +321,9 @@ configs/r8000.config       base build configuration (diffconfig): target, full w
 configs/base.packages      packages in every profile (unifi-openwrt deps, SQM, LuCI)
 profiles/                  package profiles (*.packages): default, minimal
 overlays/common/           files in every image: flow offloading, dynamic SQM, radio watchdog
-docs/                      ctf-fa.md, overclock.md, unifi-adoption.md, known-issues.md
+docs/                      ctf-fa.md, overclock.md, unifi-adoption.md, known-issues.md,
+                           experimental-hw-offload-branch.md (see the
+                           experimental/bcm53xx-hw-offload branch)
 scripts/build.sh           reproducible build of one or more profiles
 scripts/bump-upstream.sh   move upstream/ to the current openwrt-25.12 tip
 scripts/profile.sh         profile -> .config, and the post-defconfig check
