@@ -1,0 +1,63 @@
+#!/bin/sh
+# On every ifup, create (once) a disabled SQM queue for any firewall zone
+# that masquerades (i.e. is a WAN uplink), named after its logical interface
+# and kept pointed at the interface's current device name - bcm53xx's
+# wireless/PCIe device names are not guaranteed stable across reboots, and a
+# static /etc/config/sqm written for one boot's "eth0"/"wan" can silently end
+# up bound to the wrong device, or none, after the next one.
+#
+# This never overwrites an existing section, and ships the queue DISABLED
+# with download/upload left at 0: it exists so you only have to set your
+# real link speed and flip "enabled" on, not write the section yourself. See
+# docs/known-issues.md "SQM". Adapted from the approach used by
+# 88plug/netgear-r8000-plus.
+
+[ "$ACTION" = ifup ] || exit 0
+logical="$INTERFACE"
+[ -n "$logical" ] || exit 0
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+
+is_masq_zone() {
+	local masq nets n
+	config_get masq "$1" masq '0'
+	[ "$masq" = "1" ] || return 0
+	config_get nets "$1" network "$1"
+	for n in $nets; do
+		[ "$n" = "$logical" ] || continue
+		touch "$STATE_DIR/is_wan"
+	done
+}
+
+STATE_DIR=/tmp/dynamic-wan-sqm
+mkdir -p "$STATE_DIR"
+rm -f "$STATE_DIR/is_wan"
+config_load firewall
+config_foreach is_masq_zone zone
+[ -f "$STATE_DIR/is_wan" ] || exit 0
+
+device=""
+network_get_device device "$logical" 2>/dev/null
+[ -n "$device" ] || device="$logical"
+
+section="sqm_${logical}"
+if ! uci -q get sqm."$section" >/dev/null 2>&1; then
+	uci set sqm."$section"="queue"
+	uci set sqm."$section".interface="$device"
+	uci set sqm."$section".qdisc='cake'
+	uci set sqm."$section".script='piece_of_cake.qos'
+	uci set sqm."$section".qdisc_advanced='0'
+	uci set sqm."$section".download='0'
+	uci set sqm."$section".upload='0'
+	uci set sqm."$section".enabled='0'
+	uci commit sqm
+	logger -t dynamic-wan-sqm "created disabled sqm.$section for $logical ($device) - set your real up/down kbit/s and enable it in LuCI (Network > SQM QoS) or 'uci set sqm.$section.enabled=1'"
+else
+	cur=$(uci -q get sqm."$section".interface)
+	if [ "$cur" != "$device" ]; then
+		uci set sqm."$section".interface="$device"
+		uci commit sqm
+		logger -t dynamic-wan-sqm "sqm.$section now bound to $device (was $cur)"
+	fi
+fi

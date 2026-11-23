@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Myles Liu <lyx981mike@gmail.com>
+Date: Sun, 22 Nov 2026 21:53:15 -0800
+Subject: [PATCH 2/2] mac80211: brcm: add R8000 legacy MBSS fallback for guest
+ networks
+
+See the patch file's own commit message for the technical detail.
+Fixes a second AP BSS (guest network / extra SSID) failing with
+add_iface -95 on BCM43602 firmware that predates the interface_create
+iovar.
+---
+ ...-brcmfmac-r8000-legacy-mbss-fallback.patch | 41 +++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+ create mode 100644 package/kernel/mac80211/patches/brcm/861-brcmfmac-r8000-legacy-mbss-fallback.patch
+
+diff --git a/package/kernel/mac80211/patches/brcm/861-brcmfmac-r8000-legacy-mbss-fallback.patch b/package/kernel/mac80211/patches/brcm/861-brcmfmac-r8000-legacy-mbss-fallback.patch
+new file mode 100644
+index 0000000..cc220cf
+--- /dev/null
++++ b/package/kernel/mac80211/patches/brcm/861-brcmfmac-r8000-legacy-mbss-fallback.patch
+@@ -0,0 +1,41 @@
++From: Myles Liu <lyx981mike@gmail.com>
++Date: Sun, 22 Nov 2026 00:00:00 +0000
++Subject: [PATCH] brcmfmac: fall back to legacy MBSS when the interface_create
++ version query fails
++
++Firmware that predates the "interface_create" iovar (BCM43602 firmware
++7.35.177.56, as shipped on the Netgear R8000 and other ~2015 boards
++built around the same chip) does not answer brcmf_cfg80211_request_ap_if()'s
++version query for it at all. The query failing is currently treated as
++fatal: the function returns -EOPNOTSUPP immediately, so a second AP BSS
++(a guest network, or any additional SSID) can never be created on this
++hardware - even though the same function's existing legacy "bsscfg:ssid"
++MBSS path, a few lines further down, already handles exactly this
++firmware generation and works fine once reached.
++
++iface_create_ver is initialised to 0 a few lines above the query. Let
++the query's failure fall through into the switch instead of returning
++early: with iface_create_ver still 0 it takes the existing "default:"
++case, which sets the same -EOPNOTSUPP and falls through to the legacy
++MBSS creation that already follows, instead of bailing out before ever
++reaching it.
++
++Not chip-specific: brcmf_cfg80211_request_ap_if() has no board or chip
++ID gating, so any brcmfmac device whose firmware predates
++interface_create v3 should benefit the same way. Reported for, and
++tested on, the Netgear R8000 by the 88plug/netgear-r8000-plus project,
++where it is referred to as "patch 861".
++
++Signed-off-by: Myles Liu <lyx981mike@gmail.com>
++---
++
++--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++@@ -759,7 +759,6 @@ static int brcmf_cfg80211_request_ap_if(struct brcmf_if *ifp)
++ 					 &iface_create_ver);
++ 	if (err) {
++ 		brcmf_err("fail to get supported version, err=%d\n", err);
++-		return -EOPNOTSUPP;
++ 	}
++
++ 	switch (iface_create_ver) {

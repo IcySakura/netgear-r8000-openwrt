@@ -1,0 +1,25 @@
+# Packages in every profile (see scripts/profile.sh and profiles/*.packages).
+
+# Web UI
+luci
+luci-ssl-openssl
+
+# antoniocosta/unifi-openwrt's real, non-wpad dependencies (see
+# docs/unifi-adoption.md): hostapd-utils for its runtime client deny list,
+# kmod-nft-bridge for guest-network isolation, kmod-veth for its fast-roaming
+# path. unifi-openwrt itself is not an OpenWrt feed package - see the README
+# and docs/unifi-adoption.md for why it is installed after first boot instead
+# of built into the image, and exactly how.
+hostapd-utils
+kmod-nft-bridge
+kmod-veth
+
+# SQM (Smart Queue Management): the package and the dynamic per-WAN queue
+# config in overlays/common, shipped but left disabled until you set your
+# real link speed - see docs/known-issues.md "SQM".
+sqm-scripts
+luci-app-sqm
+
+# Diagnostics
+htop
+tcpdump

@@ -1,0 +1,3 @@
+# The default profile: everything in configs/r8000.config and
+# configs/base.packages, nothing more. This is the profile the GitHub Actions
+# workflow builds unless you ask for others (see .github/workflows/build.yml).

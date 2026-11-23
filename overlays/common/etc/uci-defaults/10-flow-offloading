@@ -1,0 +1,9 @@
+#!/bin/sh
+# Turn on software flow offloading at first boot. bcm53xx (this router's
+# target) has no hardware flow-offload engine, so only the software
+# (CPU-side) fastpath is enabled here - see the README's "Hardware
+# acceleration" section. flow_offloading_hw is intentionally left unset.
+uci -q get firewall.@defaults[0] >/dev/null 2>&1 || exit 0
+uci set firewall.@defaults[0].flow_offloading='1'
+uci commit firewall
+exit 0

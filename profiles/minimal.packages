@@ -1,0 +1,12 @@
+# A plain router/AP image without the UniFi-adoption dependencies or SQM, for
+# anyone who does not want this router to become a managed UniFi AP and would
+# rather not carry the extra packages. Flash headroom is not a concern on this
+# device (128 MB NAND, ~9 MB base image - see README), so this profile exists
+# for a leaner install, not because space is tight.
+-hostapd-utils
+-kmod-nft-bridge
+-kmod-veth
+-sqm-scripts
+-luci-app-sqm
+-htop
+-tcpdump

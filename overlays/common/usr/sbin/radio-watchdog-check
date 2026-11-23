@@ -1,0 +1,82 @@
+#!/bin/sh
+# Run every 5 minutes by /etc/init.d/radio-watchdog's cron job. Looks for
+# known brcmfmac firmware-wedge signatures (PSM watchdog fired, msgbuf query
+# timeout, commonring reserve failure, flowring delete timeout - see
+# https://github.com/openwrt/openwrt/issues/14685 and
+# https://github.com/openwrt/openwrt/issues/20514) in the log lines seen
+# since the last run, and escalates within a rolling 1-hour window:
+#
+#   1st event/hour: "wifi reload"                       (cheap, driver-level)
+#   2nd event/hour: unload/reload the brcmfmac module    (redoes PCIe attach)
+#   3rd+ event/hour: reboot, rate-limited to once per 6h (falls back to
+#                    another module reload if a reboot happened recently)
+#
+# All actions are logged with `logger -t radio-watchdog`. This is a mitigation
+# for a known, not fully fixed, hardware/firmware ceiling on BCM43602 +
+# brcmfmac - see docs/known-issues.md. Disable it with
+# `/etc/init.d/radio-watchdog stop && /etc/init.d/radio-watchdog disable` if
+# you would rather not have an automatic reboot path at all.
+set -u
+
+STATE_DIR=/tmp/radio-watchdog
+COUNT_FILE="$STATE_DIR/count"
+LOG_FILE="$STATE_DIR/log.txt"
+EVENTS_FILE="$STATE_DIR/events"
+LAST_REBOOT_FILE=/etc/radio-watchdog.last-reboot
+NOW=$(date +%s)
+SIGNATURES='PSM watchdog fired|msgbuf.*timeout|commonring.*reserve.*fail|flowring.*delete.*timeout'
+
+mkdir -p "$STATE_DIR"
+prev=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+logread > "$LOG_FILE" 2>/dev/null
+cur=$(wc -l < "$LOG_FILE")
+echo "$cur" > "$COUNT_FILE"
+
+if [ "$cur" -gt "$prev" ] 2>/dev/null; then
+	new_lines=$(tail -n "$((cur - prev))" "$LOG_FILE")
+else
+	# First run, or the log ring buffer rotated under us: scan what we have
+	# once rather than silently going blind.
+	new_lines=$(cat "$LOG_FILE")
+fi
+
+hit=$(printf '%s\n' "$new_lines" | grep -Ei "$SIGNATURES" | tail -1)
+[ -n "$hit" ] || exit 0
+logger -t radio-watchdog "firmware-wedge signature seen: $hit"
+
+# Count events in the last hour (append this one, prune anything older).
+{ [ -f "$EVENTS_FILE" ] && awk -v now="$NOW" '$1 > now - 3600' "$EVENTS_FILE"; echo "$NOW"; } > "$EVENTS_FILE.new"
+mv "$EVENTS_FILE.new" "$EVENTS_FILE"
+count=$(wc -l < "$EVENTS_FILE")
+
+reload_module() {
+	wifi down >/dev/null 2>&1
+	rmmod brcmfmac >/dev/null 2>&1
+	sleep 2
+	modprobe brcmfmac >/dev/null 2>&1
+	sleep 2
+	wifi up >/dev/null 2>&1
+}
+
+case "$count" in
+1)
+	logger -t radio-watchdog "1st event this hour: wifi reload"
+	wifi reload >/dev/null 2>&1
+	;;
+2)
+	logger -t radio-watchdog "2nd event this hour: reloading the brcmfmac module"
+	reload_module
+	;;
+*)
+	last=$(cat "$LAST_REBOOT_FILE" 2>/dev/null || echo 0)
+	if [ $((NOW - last)) -ge 21600 ]; then
+		logger -t radio-watchdog "3rd+ event this hour: rebooting (rate-limited to once per 6h)"
+		echo "$NOW" > "$LAST_REBOOT_FILE"
+		sync
+		reboot
+	else
+		logger -t radio-watchdog "3rd+ event this hour, but rebooted recently: reloading the brcmfmac module again instead of rebooting"
+		reload_module
+	fi
+	;;
+esac

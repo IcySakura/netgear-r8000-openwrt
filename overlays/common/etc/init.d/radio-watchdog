@@ -1,0 +1,22 @@
+#!/bin/sh /etc/rc.common
+# Installs/removes the cron job for usr/sbin/radio-watchdog-check (see that
+# script for what it does and why). Adapted from the approach used by
+# 88plug/netgear-r8000-plus; see docs/known-issues.md "Radio watchdog".
+START=99
+STOP=10
+
+CRON_FILE=/etc/crontabs/root
+CRON_LINE="*/5 * * * * /usr/sbin/radio-watchdog-check"
+
+start() {
+	[ -f "$CRON_FILE" ] && grep -qxF "$CRON_LINE" "$CRON_FILE" 2>/dev/null && return 0
+	echo "$CRON_LINE" >> "$CRON_FILE"
+	/etc/init.d/cron enabled || /etc/init.d/cron enable
+	/etc/init.d/cron restart >/dev/null 2>&1
+}
+
+stop() {
+	[ -f "$CRON_FILE" ] || return 0
+	grep -vxF "$CRON_LINE" "$CRON_FILE" > "$CRON_FILE.tmp" 2>/dev/null && mv "$CRON_FILE.tmp" "$CRON_FILE"
+	/etc/init.d/cron restart >/dev/null 2>&1
+}
