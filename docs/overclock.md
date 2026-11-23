@@ -3,68 +3,176 @@
 Short version: **this build does not include an overclock option.** Unlike
 the other two repositories this one follows the conventions of (both of
 which ship a real, reversible overclock feature for their own SoCs - see
-their `docs/cpu-overclock.md`), there is currently nothing for a comparable
-feature on the R8000 to attach to.
+their `docs/cpu-overclock.md`), there is nothing for a comparable feature on
+the R8000 to attach to. This was first investigated when this repository was
+written, and re-investigated from scratch on 2026-11-22 against mainline
+Linux itself (not just OpenWrt's tree, and not taking the earlier conclusion
+at face value) after studying exactly how
+[linksys-mx4300-openwrt-nss](https://github.com/IcySakura/linksys-mx4300-openwrt-nss)
+achieves overclocking on its Qualcomm IPQ807x SoC, to see whether an
+analogous mechanism exists here. It does not - see below for the evidence and
+exactly why the MX4300's trick does not transfer.
 
-## What was checked
+## The MX4300 pattern, for comparison
 
-The R8000's BCM4709A0 is a dual-core ARM Cortex-A9 at a fixed ~1000 MHz. The
-full device-tree chain was read directly (`bcm4709-netgear-r8000.dts` ->
-`bcm4709.dtsi` -> `bcm4708.dtsi` -> `bcm5301x.dtsi`):
+The MX4300's overclock (`docs/cpu-overclock.md` in that repository) does not
+reprogram the CPU's own PLL past its design limit. Instead it exploits three
+facts specific to that SoC:
 
-- **No `operating-points-v2` property exists anywhere in that chain.** The
-  `cpus` node declares two `arm,cortex-a9` cores with
-  `enable-method = "brcm,bcm-nsp-smp"` and nothing describing alternate
-  frequencies.
-- The actual clock tree is a 25 MHz fixed oscillator feeding an `a9pll` node
-  (`compatible = "brcm,nsp-armpll"`, driven by the mainline `drivers/clk/bcm/clk-nsp.c`
-  kernel driver), plus separate `lcpll0`/`genpll` PLLs for peripherals. There
-  is no `cpufreq-dt` binding anywhere, and a full grep of OpenWrt's
-  `target/linux/bcm53xx/` tree (patches, kernel configs, base-files) for
-  "cpufreq" returns **zero matches**.
-- **Verdict: there is no OS-level dynamic frequency scaling on this platform
-  in current OpenWrt at all** - not "present but disabled," not "present but
-  undocumented." The CPU simply runs at whatever rate the `a9pll` hardware
-  registers already held when Linux took over, set by the bootloader (CFE)
-  or left at reset defaults.
+1. The CPU cluster's own PLL (APSS "Huayra") is hard-clamped in hardware at
+   1401.6 MHz regardless of what is programmed into it.
+2. The CPU clock mux can *already* select a second, independent PLL
+   (`GPLL2`) that the SoC's global clock controller exposes for an unrelated
+   purpose (SD/eMMC), which has no such clamp and is not used by anything on
+   that board.
+3. A kernel patch (`apss-ipq6018.c`) teaches the existing clock-mux driver to
+   take rates above the clamp from that second PLL when the device tree
+   names it, parks the cores on a third, always-safe PLL during every rate
+   change, and exposes the new rates as ordinary `operating-points-v2` boost
+   entries. Voltage is handled by the SoC's existing closed-loop CPR
+   regulator, extended with a runtime debugfs offset.
 
-Compare this with the Linksys MX4300 (Qualcomm IPQ8174) overclock this
-convention is based on, which works by feeding the CPU cores from an
-alternate, already-present PLL (GPLL2) the SoC's clock driver already exposes
-- a real, if nonstandard, OS-level mechanism to build a LuCI app and preset
-table around. The R8000 has nothing equivalent exposed to the OS today.
+The common thread: **every piece this needs (the alternate PLL, the mux that
+can already select it, the clock-rate-change notifier mechanism, the OPP/CPR
+voltage-scaling infrastructure) already exists upstream for this SoC
+family and is already active in Linux.** The MX4300 patch is additive glue
+between parts the kernel/DT already have, not an attempt to make silicon do
+something nobody has gotten it to do.
 
-## What it would take
+That is the bar this document tried to find an equivalent for on BCM4709A0.
+
+## What was re-checked on 2026-11-22, directly against mainline Linux
+
+Earlier docs here had checked OpenWrt's own `target/linux/bcm53xx/` tree
+(patches, kernel config, base-files) and found no "cpufreq" anywhere. That
+alone does not rule out "exists upstream, just not wired up by OpenWrt" - so
+this pass went to mainline Linux source directly
+(`git.kernel.org/.../torvalds/linux.git`, current `master`) instead of taking
+that absence as final:
+
+- **`drivers/cpufreq/` has no Northstar/iProc/bcm5301x/BCM4708-4709 driver.**
+  The full directory listing (85 files) has exactly two Broadcom-named
+  drivers: `brcmstb-avs-cpufreq.c` (Broadcom's **set-top-box** BCM7xxx ARM
+  family, a different SoC line entirely, driven by a separate AVS firmware
+  co-processor) and `bmips-cpufreq.c` (Broadcom's **MIPS**-based BCM63xx/3368
+  line, not this ARM Cortex-A9 family at all). Nothing else Broadcom-related
+  exists in that directory, in any kernel version.
+- **`arch/arm/mach-bcm/bcm_5301x.c`** (the platform code `DT_MACHINE_START`
+  for `brcm,bcm4708`, which is what the R8000 and every BCM4709 board
+  matches) registers only an early abort-handler quirk for PCIe. No power
+  management, no `cpufreq` registration, no `.pm` hook at all. The sibling
+  `bcm_nsp.c` (for `brcm,nsp`, the closely related NSP line) is even
+  shorter. Neither file has ever had cpufreq-related code.
+- **The ARM PLL clock driver's own `clk_ops` table has no write path.**
+  `drivers/clk/bcm/clk-iproc-armpll.c` (`iproc_armpll_setup()`, the function
+  the earlier pass correctly identified as backing the `a9pll` node) defines:
+  ```c
+  static const struct clk_ops iproc_arm_pll_ops = {
+          .recalc_rate = iproc_arm_pll_recalc_rate,
+  };
+  ```
+  That is the **entire** ops table - `recalc_rate` only (read the current
+  hardware state back into the clock framework). There is no `.set_rate`,
+  `.round_rate`, or `.determine_rate`. This is not "present but unused by
+  OpenWrt" - the upstream Linux driver for this exact clock is architecturally
+  read-only, on every kernel version that has ever shipped it, for every
+  SoC that uses `brcm,nsp-armpll` (the BCM5301x/Northstar family, including
+  the R8000's BCM4709A0).
+- **The hardware register layout this read-only code exposes is more
+  interesting than "nothing is there," though.** `iproc_arm_pll_recalc_rate()`
+  decodes a genuine frequency-ID (FID) policy mechanism: a register
+  (`ARM_DIV` at offset `0xe00`) holds a 4-entry "policy" select with an
+  override bit, each policy slot pointing (via `POLICY_FREQ` at `0x008`) at
+  one of four FIDs - crystal clock, system clock, PLL channel 0 ("slow"), or
+  PLL channel 1 ("fast") - and the PLL's own dividers
+  (`PLLARMA`/`PLLARMB`/`PLLARMC` at `0xc00`-`0xc08`, holding `pdiv`, a
+  20-bit fixed-point `ndiv`, and `mdiv`) are fully programmable in principle,
+  including a documented "offset mode" (`PLLARM_OFFSET` at `0xc24`, a
+  `SW_CTL` bit that substitutes a software-supplied `ndiv` for the normal
+  one). **Nothing in mainline Linux, OpenWrt, or (as far as this
+  investigation found) any public DD-WRT/Tomato/vendor GPL source ever
+  writes to this register set at runtime.** The closest known analogue - the
+  CFE bootloader's NVRAM `clkfreq` variable DD-WRT/Tomato use on this SoC
+  family - is read by *those vendor firmwares' own early board-init code*
+  before Linux proper starts, not by CFE itself and not by anything in
+  mainline Linux; OpenWrt's boot path for this device does not read or
+  interpret that variable at all (re-confirmed: no match for `clkfreq` or
+  `armpll` anywhere in OpenWrt's pinned `openwrt-25.12` `target/linux/bcm53xx/`
+  tree).
+- **OpenWrt's generic kernel config explicitly disables `CONFIG_CPU_FREQ`**
+  (`target/linux/generic/config-6.12`: `# CONFIG_CPU_FREQ is not set`, plus
+  every `CPU_FREQ_*` governor option), and the `bcm53xx`-specific
+  `config-6.12` does not re-enable it. So even if a driver existed, this
+  target's kernel is not currently built with the cpufreq subsystem at all -
+  a second, independent reason `/sys/devices/system/cpu/cpufreq/` does not
+  exist on this build, on top of there being no driver to populate it.
+
+**Verdict, re-confirmed with primary sources this time (exact files,
+functions and register offsets, not just an absence of a grep match): there
+is no OS-level dynamic frequency scaling mechanism for this SoC anywhere in
+mainline Linux, let alone in OpenWrt.** This is a stronger, better-evidenced
+version of the same conclusion the first pass reached - not a reversal of it.
+
+## Why the MX4300 pattern does not transfer
+
+Mapping the MX4300's three ingredients onto BCM4709A0:
+
+| MX4300 (IPQ8174) | BCM4709A0 (Northstar) |
+|---|---|
+| CPU PLL hard-clamped in hardware, but reads back cleanly | CPU PLL (`a9pll`) has no clamp *known* to exist, but also has no documented, verified-safe way to reprogram its dividers live while cores are clocked from it |
+| A second, already-active PLL (`GPLL2`) is one mux-select away, already running, already stable at the target rates for an unrelated peripheral | The nearest analogue (the FID "policy" mechanism) is real hardware but has **no known-safe write sequence published anywhere** - not upstream, not in any community project, not in any vendor GPL source this investigation found. Nobody has published what happens if you flip `SW_CTL` or write a new `ndiv` while the cores are live. |
+| The clock-rate-change notifier mechanism (`cpu_clk_notifier_fn`, parking cores on a safe third clock during any PLL change) already exists in the upstream Qualcomm clock driver for exactly this purpose | No equivalent notifier/parking mechanism exists for `a9pll` in `clk-iproc-armpll.c` - adding one means writing it from scratch against a register interface nobody has validated for runtime changes |
+| Voltage scaling piggybacks on the SoC's existing closed-loop CPR regulator, already modeled in the kernel, with corner tables already calibrated by Qualcomm per speed bin | There is no equivalent software-visible voltage-control path for this SoC documented anywhere; voltage for this family is set by board-level regulators/straps at hardware design time, not adjusted by Linux |
+
+Every row on the MX4300 side is "a thing that already works, glued
+together." Every row on the BCM4709A0 side is "would need to be invented and
+validated on real silicon, with no published prior art to build from and no
+`operating-points-v2`/CPR-equivalent safety net to fall back into if it goes
+wrong." That is a different category of work, not a smaller version of the
+same work.
+
+## What it would actually take
 
 Either of:
 
-1. A kernel patch that calls `clk_set_rate()` on the `a9pll` clock directly.
-   The underlying `iproc_armpll_setup()` PLL driver can, in principle, set
-   arbitrary dividers - it is just never wired up to anything a user can
-   change at runtime in OpenWrt today. This would be new driver/DTS work, not
-   a config toggle.
-2. Going back to the CFE bootloader's own NVRAM `clkfreq` variable (the
-   `nvram set clkfreq=1400,800; nvram commit; reboot` mechanism DD-WRT/Tomato
-   used on this SoC family). This only works under those firmwares' own boot
-   flow; it is not how OpenWrt's boot path uses CFE, and nothing in the
-   current OpenWrt bcm53xx target reads or writes `clkfreq`.
+1. A new kernel clock driver (not a config toggle) that adds `.set_rate` to
+   `iproc_arm_pll_recalc_rate`'s ops table, writes `PLLARMA`/`B`/`C` and/or
+   the `ARM_DIV` policy override directly, and - critically - parks the CPU
+   cores on a safe clock source during the transition the way the MX4300
+   patch's notifier does, since nothing here currently does that and the ARM
+   PLL is the cores' *only* known clock source today (there is no GPLL2-style
+   escape hatch already wired to this mux in any Northstar devicetree found).
+   This is genuine kernel driver development against an undocumented-for-this-
+   purpose register interface, on hardware this repository cannot test on.
+2. Reverse-engineering and reimplementing the DD-WRT/Tomato-era CFE
+   `clkfreq` early-boot mechanism *inside OpenWrt's own boot path* (it is not
+   CFE itself that interprets `clkfreq` - that logic lives in those vendor
+   Linux builds' own board-init code, which OpenWrt does not carry). This is
+   not "turn on a flag CFE already understands" - it would mean writing new
+   early-boot code for OpenWrt's kernel that does not exist today, calling
+   into the same unverified PLL registers as option 1 anyway.
 
-Either path is real kernel/bootloader engineering on hardware this repository
-cannot test on - not something to ship as a "config option" per the original
-brief, because there is no existing on/off switch to wrap. Building (1) from
-scratch and shipping it as a default-off, "experimental" option without ever
-having run it on a physical R8000 would be exactly the kind of untested,
-self-written low-level change this repository is trying to avoid (see
-`docs/ctf-fa.md` for the same reasoning applied to FA offload).
+Both are real, from-scratch kernel engineering against a chip whose runtime
+voltage/frequency-margin characteristics are not documented for OpenWrt's use
+case, not something to ship as a default-off "config option" per the user's
+framing - because unlike the MX4300, there is no existing on/off switch
+anywhere in this stack to wrap. Shipping either, untested, as "experimental"
+would be exactly the kind of self-written, unvalidated low-level change this
+repository avoids elsewhere (see `docs/ctf-fa.md` for the same reasoning
+applied to hardware packet offload, including why that one *did* get an
+experimental branch and this one does not: FA has an existing, reviewed,
+measured-on-real-hardware upstream patch set to build the R8000-specific
+piece on top of; CPU overclocking on this SoC has no comparable foundation
+to stand on anywhere, for anyone, on any BCM4709-family board).
 
-## What was found about overclocking this SoC family
+## What was found about overclocking this SoC family (context, not OpenWrt)
 
 No R8000-specific overclock thread was found (the OpenWrt forum archive
 thread referenced in community discussion, and the DD-WRT wiki's
 overclocking page, both returned bot-protection "Access Denied" pages to
-every fetch attempt and could not be read). What follows is for the closely
-related **R7000** (same BCM4709A0 SoC, via CFE's `clkfreq` on DD-WRT/Tomato,
-**not OpenWrt**):
+every fetch attempt, in both the original and this pass, and could not be
+read). What follows is for the closely related **R7000** (same BCM4709A0
+SoC, via CFE's `clkfreq` on DD-WRT/Tomato, **not OpenWrt**):
 
 - A Tom's Hardware thread on the R7000 describes the 40 nm BCM4709A0 as
   "usually reach[ing] about 1.2 GHz without voltage changes, and a lucky few
@@ -75,8 +183,8 @@ related **R7000** (same BCM4709A0 SoC, via CFE's `clkfreq` on DD-WRT/Tomato,
   user reported a bootloop/brick after setting 1400 MHz.
 - The specific "~80-90 °C under a small overclock" figure referenced when
   this build was planned could not be re-sourced to a specific thread during
-  this investigation (the likely source threads are behind bot protection);
-  treat it as plausible but not independently re-confirmed here.
+  either pass (the likely source threads are behind bot protection); treat it
+  as plausible but not independently re-confirmed here.
 - The DD-WRT wiki's general overclocking guidance for this hardware line
   warns it "can brick or physically destroy your router," with no
   vendor/community support for damaged units.
@@ -85,14 +193,20 @@ None of this is an OpenWrt, or R8000-specific, data point - it is included
 only to make clear that even the DD-WRT/Tomato-era `clkfreq` mechanism this
 SoC family is known for runs meaningfully hot, on a board design (the R7000)
 that is not identical to the R8000's three-radio layout and almost certainly
-has different thermal headroom.
+has different thermal headroom, and that it relies on vendor-firmware boot
+code OpenWrt does not have.
 
 ## If you want to pursue this yourself
 
-Do not reuse the CFE `clkfreq` approach under OpenWrt without first checking
-whether OpenWrt's CFE boot path on this device even reads that NVRAM variable
-(as far as this investigation found, it does not). A real OpenWrt-side
-overclock here starts with upstreaming `cpufreq-dt`/`operating-points-v2`
-support to `bcm4709.dtsi` and `clk-nsp.c` - that is genuine kernel work,
-ideally done with a thermal camera and a spare router, not a config flag
-copied from a different SoC.
+Do not reuse the CFE `clkfreq` approach under OpenWrt without first writing
+the early-boot NVRAM-reading code OpenWrt's own boot path would need (it does
+not read or interpret `clkfreq` today - re-confirmed directly against
+mainline Linux and the pinned `openwrt-25.12` `bcm53xx` tree, not just
+asserted). A real OpenWrt-side overclock here starts with upstreaming
+`cpufreq-dt`/`operating-points-v2` support to `bcm4709.dtsi`, a real
+`.set_rate` implementation in `clk-iproc-armpll.c` (the register fields are
+named above; nobody has published what a safe write sequence to them looks
+like), and a core-parking notifier comparable to the MX4300's - genuine
+kernel work, ideally done with a thermal camera, a spare router, and a way to
+recover from a hung CPU clock mid-transition, not a config flag copied from a
+different SoC's already-finished plumbing.

@@ -39,8 +39,8 @@ one is not named "-nss" and does not behave like those two.
 | Software flow offloading throughput | **Not measured on this image**; a 2022-era community report on a different bcm53xx device (Phicomm K3, Broadcom's older CTF, not this build's software fastpath) reached close to wire speed - see [docs/ctf-fa.md](docs/ctf-fa.md) |
 | Radio watchdog, dynamic SQM | Logic reviewed, not run on hardware |
 | unifi-openwrt adoption | **Not tested** - nobody, as far as this investigation found, has run unifi-openwrt on any bcm53xx/`brcmfmac` device; see [docs/unifi-adoption.md](docs/unifi-adoption.md) |
-| CPU overclocking | **Not implemented** - investigated and found there is no OS-level mechanism to attach one to on this SoC in OpenWrt today; see [docs/overclock.md](docs/overclock.md) |
-| Hardware packet offload (CTF/FA) | **Not implemented** - investigated an existing pull request and found it does not cover this board; see [docs/ctf-fa.md](docs/ctf-fa.md) |
+| CPU overclocking | **Not implemented** - re-investigated 2026-11-22 directly against mainline Linux source (not just OpenWrt's tree): no cpufreq driver, no writable clock-rate path, and no platform PM code exist anywhere upstream for this SoC family. Conclusion unchanged, now backed by primary sources; see [docs/overclock.md](docs/overclock.md) |
+| Hardware packet offload (CTF/FA) | **Not implemented on `main`** - re-investigated 2026-11-22: the upstream PR has moved (2 of 6 reviews, R6400 now also covered) and the R8000 turns out to already have the switch-port prerequisite the PR's other boards needed added. A small, explicitly experimental, untested patch now exists on the separate `experimental/bcm53xx-hw-offload` branch, which nothing in this repository's automation builds by default; see [docs/ctf-fa.md](docs/ctf-fa.md) |
 
 ## Hardware acceleration reality
 
@@ -101,12 +101,19 @@ why this is BCM43602, not the BCM4366 sometimes associated with this router.
   `kmod-veth`. unifi-openwrt itself is installed after first boot, following
   its own README - see [docs/unifi-adoption.md](docs/unifi-adoption.md) for
   why and exactly how.
-- **Deliberately not included**: hardware packet offload
+- **Deliberately not included on `main`**: hardware packet offload
   ([docs/ctf-fa.md](docs/ctf-fa.md)) and CPU overclocking
-  ([docs/overclock.md](docs/overclock.md)) - both investigated, neither safe
-  to ship the way this repository's two reference repositories ship their
-  own SoC-specific versions of these features. Read those two documents
-  before assuming either is just "missing."
+  ([docs/overclock.md](docs/overclock.md)) - both investigated twice (most
+  recently 2026-11-22, digging into mainline Linux source for overclocking
+  and the actual PR diff/history for offload), neither safe to ship on
+  `main` the way this repository's two reference repositories ship their own
+  SoC-specific versions of these features. Overclocking has no mechanism to
+  attach to anywhere upstream, full stop. Hardware offload has a small,
+  plausible, R8000-specific patch now written and committed - but only on
+  the separate, non-default **`experimental/bcm53xx-hw-offload`** branch,
+  untested, with no automation that can build or flash it without a person
+  deliberately choosing that branch. Read those two documents before
+  assuming either is just "missing."
 
 ## Hardware
 
@@ -325,7 +332,10 @@ tools/validate-images.sh   static checks of the images
   the UniFi-adoption agent this build's packages exist to support.
 - **egc112 and strrs** - the FA/CTF offload investigation in
   [openwrt/openwrt#26789](https://github.com/openwrt/openwrt/pull/26789),
-  read in full for `docs/ctf-fa.md` even though it is not included here.
+  read in full (diff, commit history and provenance record) for
+  `docs/ctf-fa.md`; `main` does not include it, but their branch is the base
+  the `experimental/bcm53xx-hw-offload` branch's R8000 patch is pinned on top
+  of.
 - **[IcySakura/linksys-mx4300-openwrt-nss](https://github.com/IcySakura/linksys-mx4300-openwrt-nss)**
   and **[IcySakura/redmi-ax3000-openwrt-nss](https://github.com/IcySakura/redmi-ax3000-openwrt-nss)** -
   the repository conventions (structure, scripts, documentation style) this
