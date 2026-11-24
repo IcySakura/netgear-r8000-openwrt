@@ -10,8 +10,14 @@ dir=${1:?usage: $0 out/PROFILE}
 fail=0
 note() { echo "FAIL: $1" >&2; fail=1; }
 
-images=("$dir"/*netgear_r8000*)
-if [ ! -e "${images[0]}" ]; then
+images=()
+for f in "$dir"/*netgear_r8000*; do
+	case "$f" in
+	*.manifest) continue ;; # a package list, not a flashable image - naturally a few KB
+	esac
+	images+=("$f")
+done
+if [ "${#images[@]}" = 0 ]; then
 	note "no netgear_r8000 image files in $dir"
 else
 	for f in "${images[@]}"; do
