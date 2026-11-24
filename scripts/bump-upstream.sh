@@ -34,7 +34,7 @@ new_feeds=$(awk -v branch="$OPENWRT_BRANCH" '
 		cmd = "git ls-remote " url " refs/heads/" branch " | awk \x27{print $1}\x27"
 		cmd | getline commit
 		close(cmd)
-		if (commit != "") { print name " " url "^" commit; next }
+		if (commit != "") { print "src-git " name " " url "^" commit; next }
 	}
 	{ print }
 ' "$FEEDS")
