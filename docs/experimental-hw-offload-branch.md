@@ -4,6 +4,31 @@ You are reading this because you checked out, or are considering building,
 the `experimental/bcm53xx-hw-offload` branch. It does not build the same
 thing as `main`. Read this whole document first.
 
+## Status 2026-11-24: built and flashed once - read this first
+
+- Re-pinned to the PR head `e124ccf5d7` (2026-11-24). Since that head the PR
+  keeps `brcm-prepend` out of device trees (a preinit hook switches the tag
+  at boot only when `flow_offloading` and `flow_offloading_hw` are both on),
+  so `patches/0003` is now just "enable port 5" (gmac0, fixed link, the trap
+  port) plus `/lib/preinit/99_30_fa_trial`: `touch /etc/fa-trial` before a
+  reboot and `flow_offloading_hw` is reset to 0 in the saved config right
+  after the tag hook has used it, so a hang or watchdog reset after enabling
+  the accelerator boots the next time without it.
+- The FA hardware is present on the R8000 (GMAC3 core in `bcma`, `found
+  switch: BCM53012, rev 5`; rev >= 3 is Broadcom's `FA_CAPABLE`).
+- Built locally (the PR's own `feeds.conf.default`, i.e. OpenWrt `main`
+  feeds, not `upstream/feeds.conf`'s 25.12 pins; + `ethtool`, `iperf3`) and
+  flashed with `sysupgrade` keeping settings, FA **off**. Result: it booted,
+  took its WAN lease, routed and NATed (a forwarded test port worked), but
+  **nothing answered on 192.168.50.1:22 or :443** (the kernel itself sent
+  the RSTs - their TOS echoed the SYN's - so dropbear and uhttpd were not
+  listening, not a firewall reject). The cause is unknown; the router could
+  not be managed remotely and the accelerator was never switched on.
+  Before flashing this again: have LAN/serial access, check
+  `logread | grep -E "dropbear|uhttpd"` on first boot, and consider flashing
+  without keeping settings (`sysupgrade -n`) from a LAN-side shell - the
+  25.12 config may be what main's packages choke on.
+
 ## What this branch is, in one sentence
 
 An attempt at real Broadcom hardware packet offload (the Northstar Flow
