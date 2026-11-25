@@ -36,10 +36,10 @@ one is not named "-nss" and does not behave like those two.
 | Builds (compiles, patches apply, packages resolve) | Verified by GitHub Actions on every push/schedule |
 | `patches/0001` (5 GHz NVRAM fix) and `patches/0002` (guest-network MBSS fallback) apply cleanly to the exact pinned source | Verified directly against that source while writing this repository |
 | Boots, Wi-Fi comes up, 5 GHz actually works, guest networks actually work | **Not tested** - the underlying values/fix are reused from or informed by [88plug/netgear-r8000-plus](https://github.com/88plug/netgear-r8000-plus)'s own hardware testing, not retested here |
-| Software flow offloading throughput | **Not measured on this image**; a 2022-era community report on a different bcm53xx device (Phicomm K3, Broadcom's older CTF, not this build's software fastpath) reached close to wire speed - see [docs/ctf-fa.md](docs/ctf-fa.md) |
+| Software flow offloading throughput | **Measured on a real R8000 (2026-11-24)**: 481 -> 916 Mbit/s routed (one TCP stream, NAT), 102 -> 210 Mbit/s at small packets; with this build's packet-steering fix 912 Mbit/s with ~20 % CPU idle and 296 Mbit/s at small packets - see [docs/performance.md](docs/performance.md) |
 | Radio watchdog, dynamic SQM | Logic reviewed, not run on hardware |
 | unifi-openwrt adoption | **Not tested** - nobody, as far as this investigation found, has run unifi-openwrt on any bcm53xx/`brcmfmac` device; see [docs/unifi-adoption.md](docs/unifi-adoption.md) |
-| CPU overclocking | **Not implemented** - re-investigated 2026-11-22 directly against mainline Linux source (not just OpenWrt's tree): no cpufreq driver, no writable clock-rate path, and no platform PM code exist anywhere upstream for this SoC family. Conclusion unchanged, now backed by primary sources; see [docs/overclock.md](docs/overclock.md) |
+| CPU overclocking | **Not applied** - corrected 2026-11-24 from the router's own bootloader: CFE itself reads NVRAM `clkfreq` (now `1000,800`) and this unit's CFE v1.0.8 has the old ungated ARM clock table (600-1600 MHz), so `nvram set clkfreq=1200,800` would work under OpenWrt; it is not done because a bad clock needs serial-console recovery. No undervolting exists. Prepared procedure: [docs/overclock.md](docs/overclock.md) |
 | Hardware packet offload (CTF/FA) | **Not implemented on `main`** - re-investigated 2026-11-22: the upstream PR has moved (2 of 6 reviews, R6400 now also covered) and the R8000 turns out to already have the switch-port prerequisite the PR's other boards needed added. A small, explicitly experimental, untested patch now exists on the separate `experimental/bcm53xx-hw-offload` branch, which nothing in this repository's automation builds by default; see [docs/ctf-fa.md](docs/ctf-fa.md) |
 
 ## Hardware acceleration reality
@@ -89,6 +89,11 @@ why this is BCM43602, not the BCM4366 sometimes associated with this router.
   AP BSS at all. See [docs/known-issues.md](docs/known-issues.md).
 - **Software flow offloading, tuned as the baseline** (`overlays/common`):
   on by default; see [Hardware acceleration reality](#hardware-acceleration-reality).
+- **Packet-steering fix** (`overlays/common/usr/libexec/platform/packet-steering.sh`):
+  25.12's bcm53xx script steers `eth0`, but the R8000's switch conduit is
+  `eth2`, so packet steering silently did nothing and CPU1 sat idle while
+  CPU0 forwarded everything. Measured +41 % at small packets; see
+  [docs/performance.md](docs/performance.md).
 - **Dynamic, safe-by-default SQM** (`overlays/common`): a `cake` queue is
   created automatically for your WAN zone, bound to its current device name,
   but shipped disabled until you set your real bandwidth. See
@@ -310,12 +315,13 @@ configs/r8000.config       base build configuration (diffconfig): target, full w
 configs/base.packages      packages in every profile (unifi-openwrt deps, SQM, LuCI)
 profiles/                  package profiles (*.packages): default, minimal
 overlays/common/           files in every image: flow offloading, dynamic SQM, radio watchdog
-docs/                      ctf-fa.md, overclock.md, unifi-adoption.md, known-issues.md
+docs/                      performance.md, ctf-fa.md, overclock.md, unifi-adoption.md, known-issues.md
 scripts/build.sh           reproducible build of one or more profiles
 scripts/bump-upstream.sh   move upstream/ to the current openwrt-25.12 tip
 scripts/profile.sh         profile -> .config, and the post-defconfig check
 scripts/router-packages.sh profile from a running router
 tools/validate-images.sh   static checks of the images
+tools/perftest/            NAT-hairpin forwarding benchmark and CPU sampler used for docs/performance.md
 .github/workflows/         GitHub Actions build and release
 ```
 
