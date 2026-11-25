@@ -1,5 +1,36 @@
 # Hardware packet offload (CTF/FA): investigated, now has an experimental branch
 
+> [!IMPORTANT]
+> **2026-11-24, checked on the real R8000.** Two of the open questions below
+> are now answered from the router's own boot log, and one claim is wrong:
+>
+> - **The FA silicon is there.** `bcma` lists a fourth GMAC core (core 6,
+>   `GBit MAC ... rev 0x05`, which mainline bgmac rejects as "Unsupported
+>   core_unit 3") - the GMAC3 core space the FA registers live in. And b53
+>   prints `found switch: BCM53012, rev 5` - the "rev 0 regardless" claim in
+>   point 3 below is wrong, `b53_srab` does print the real revision here.
+>   Broadcom's own `et` driver (`etc_fa.c`: `FA_CAPABLE(rev, chip) ((rev) >=
+>   3 || CHIPID(chip) == BCM47094_CHIP_ID)`) and the PR's b53 check use
+>   exactly that revision: rev 5 qualifies. The PR authors say the same of
+>   the EA9200, which is the identical chip (53010 / BCM53012 rev 5).
+> - **The board side is one line**, not two: the PR's current design (head
+>   `e124ccf5d7`) no longer puts `brcm-prepend` in device trees; a preinit
+>   hook switches the tag at boot only when `flow_offloading` and
+>   `flow_offloading_hw` are both on. The R8000 only needs port 5 enabled
+>   (drop `status = "disabled"`, keep its fixed link). The experimental
+>   branch now carries that patch instead of the older two-tag one.
+> - **Software offloading is already at the wire for full-size packets**
+>   (916 Mbit/s, see [performance.md](performance.md)); the FA's value on
+>   this board is the CPU it frees (CPU0 is at 99 % softirq doing that) and
+>   small-packet rate, not single-stream gigabit.
+> - **Test status:** an image of the PR branch + R8000 port-5 patch was built
+>   locally and flashed on 2026-11-24 (FA left off). It booted and routed
+>   (WAN DHCP, NAT and port forwards worked), but dropbear and uhttpd were
+>   not listening, so the router could not be managed remotely and the FA
+>   itself was never switched on. See
+>   [experimental-hw-offload-branch.md](experimental-hw-offload-branch.md)
+>   on the `experimental/bcm53xx-hw-offload` branch.
+
 Short version: **the `main` branch of this repository still does not include
 Broadcom's Flow Accelerator (FA)/Cut-Through Forwarding (CTF) offload**, for
 the same reason as before - nobody has written or validated R8000 enablement
