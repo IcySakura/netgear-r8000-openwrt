@@ -1,0 +1,9 @@
+#!/bin/sh
+# Turn packet steering on at first boot unless it was set explicitly. With
+# overlays/common/usr/libexec/platform/packet-steering.sh this moves the
+# forwarding work for eth2 (the switch conduit) to CPU1 - see that file.
+uci -q get network.@globals[0] >/dev/null 2>&1 || exit 0
+[ -n "$(uci -q get network.@globals[0].packet_steering)" ] && exit 0
+uci set network.@globals[0].packet_steering='1'
+uci commit network
+exit 0

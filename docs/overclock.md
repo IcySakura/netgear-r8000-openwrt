@@ -1,5 +1,16 @@
 # CPU overclocking: investigated, not implemented
 
+> [!IMPORTANT]
+> **Correction, 2026-11-24, from the real device's own bootloader.** The
+> sections below say the CFE `clkfreq` variable is interpreted only by
+> DD-WRT/Tomato's own Linux board code and that OpenWrt has no way to use
+> it. That is wrong. `clkfreq` is read **by CFE itself**, before any kernel
+> runs, so it applies under OpenWrt exactly as under stock or DD-WRT. What
+> remains true: Linux has no runtime cpufreq/`set_rate` path for this SoC,
+> and there is no software voltage control. See
+> [What the R8000's own CFE does](#what-the-r8000s-own-cfe-does-2026-11-24)
+> at the end for the evidence and for the prepared (not executed) procedure.
+
 Short version: **this build does not include an overclock option.** Unlike
 the other two repositories this one follows the conventions of (both of
 which ship a real, reversible overclock feature for their own SoCs - see
@@ -210,3 +221,70 @@ like), and a core-parking notifier comparable to the MX4300's - genuine
 kernel work, ideally done with a thermal camera, a spare router, and a way to
 recover from a hung CPU clock mid-transition, not a config flag copied from a
 different SoC's already-finished plumbing.
+
+## What the R8000's own CFE does (2026-11-24)
+
+Read from the running router (read-only) and from the `boot` partition
+backup (`mtd0`) taken before this image was flashed:
+
+- `nvram get clkfreq` -> `1000,800` (ARM MHz, DDR MHz); `sdram_ncdl=0`;
+  `cfe_version=v1.0.8`; BogoMIPS 1000 (matches 1000 MHz on this kernel).
+- `mtd0` holds a small loader plus an LZMA-compressed CFE (stream at offset
+  `0x1c004`, 326112 bytes unpacked). The unpacked CFE contains Broadcom's
+  `board_clock_init()` strings: `clkfreq`, `sdram_ncdl`, `DDR Clock: %u MHz`,
+  `Warning: invalid DDR setting of %u MHz ignored. DDR frequency will be set
+  to %u MHz.`, `Info: DDR frequency set from clkfreq=%u,*%u*`, `coma_swreg`.
+  This is the code path (`bcm947xx_machdep.c` -> `si_arm_setclock()` in the
+  SDK's `hndarm_ca9.c`) that parses `clkfreq` and programs the ARM PLL.
+- Its ARM clock table (unpacked offset `0x4f524`) is the **old two-column
+  form**: `{600, 0x1003001}, {800, 0x1004001}, {1000, 0x1005001},
+  {1200, 0x1006001}, {1400, 0x1007001}, {1600, 0x1008001}` - MHz and PLL
+  control word, with **no per-package "supported" column**. Newer SDK CFEs
+  (FreshTomato/Merlin `shared/hndarm_ca9.c`) add one that limits a BCM4709
+  (package 0) to 1000 MHz and turns any higher request into a ~100 MHz CPU;
+  this CFE has no such gate, so it will program 1200/1400/1600 if asked.
+  (Inference from the table shape; the code itself was not disassembled.)
+  The DDR table before it is 333/389/400/533/666/775/800 MHz.
+- OpenWrt's `nvram` tool (`package/utils/nvram`) writes the `nvram` MTD
+  partition, the same one CFE reads.
+
+So an overclock under OpenWrt is a one-line NVRAM change, and the risk is
+the classic one: R7000 owners (same BCM4709A0, older CFEs like this one)
+report 1200 MHz generally fine and 1400 MHz sometimes boot-looping before
+the kernel starts. No report of 1200+ on an R8000 was found. There is no
+voltage control: the core supply is a fixed board regulator (CFE only
+toggles an optional `coma_swreg` GPIO); nothing in CFE, the DT or the kernel
+can undervolt or overvolt. **Undervolting is not possible in software.**
+
+### Prepared procedure (NOT executed - needs the owner's approval)
+
+Risk: an unstable clock can hang CFE or the kernel on every boot. Recovery
+then needs **physical access** (serial console; see below). Do not do this on
+a router you cannot reach.
+
+1. Prerequisites: serial console wired and tested (R8000 UART header,
+   3.3 V TTL, 115200 8N1 - see the OpenWrt wiki R8000 page); the `mtd1`
+   (`nvram`) backup at hand; confirm you can interrupt CFE (Ctrl-C at power
+   on gives `CFE>`).
+2. Record the baseline: `nvram get clkfreq` (`1000,800`), BogoMIPS (1000),
+   an `openssl speed -elapsed aes-128-cbc` or the hairpin forwarding test
+   (`tools/perftest/hairpin.sh`), and SoC temperature if available.
+3. Change only the ARM clock, never DDR: `nvram set clkfreq=1200,800 &&
+   nvram commit && reboot`. (Not 1400/1600 first.)
+4. Verify: SSH back in, BogoMIPS should read 1200, rerun the benchmark,
+   watch stability for hours (`logread`, uptime) and temperature by touch/IR.
+5. Roll back from a booting system: `nvram set clkfreq=1000,800 && nvram
+   commit && reboot`.
+6. Roll back from a non-booting system (serial): Ctrl-C into `CFE>`, then
+   `nvram set clkfreq=1000,800`, `nvram commit`, `reboot`. If CFE itself
+   hangs before the prompt at 1200 (unlikely - the PLL is programmed early,
+   but a hang there means no prompt), the remaining path is erasing the
+   nvram partition so CFE falls back to its built-in defaults (which carry
+   `clkfreq=1000,800`, visible in `mtd0` at offset `0x47c`): whether the
+   R8000's reset-button-at-power-on does this is **unverified**; otherwise a
+   JTAG/flash-programmer job. Afterwards restore `mtd1` from the backup to
+   get Netgear's board data (MACs, Wi-Fi calibration variables) back.
+
+Expected gain if 1200 is stable: up to +20 % on CPU-bound work (small-packet
+forwarding, Wi-Fi, VPN). Full-size wired routing is already at the gigabit
+wire with software offloading and would not change.
