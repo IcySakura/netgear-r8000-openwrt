@@ -19,15 +19,9 @@ offloading tuned as the reliable baseline, and every real package
 needs so this router can become an adoptable access point in a UniFi
 controller.
 
-This repository is a build recipe, not a copy of OpenWrt: it pins an upstream
-commit, adds two patches on top, and builds images with GitHub Actions (or
-locally) from package profiles. It follows the same conventions as two other
-personal build repositories
-([linksys-mx4300-openwrt-nss](https://github.com/IcySakura/linksys-mx4300-openwrt-nss),
-[redmi-ax3000-openwrt-nss](https://github.com/IcySakura/redmi-ax3000-openwrt-nss)),
-**adapted for a completely different SoC vendor** - see
-[Hardware acceleration reality](#hardware-acceleration-reality) for why this
-one is not named "-nss" and does not behave like those two.
+This repository is a standalone build recipe, not a copy of OpenWrt: it pins
+an upstream commit, adds board-specific patches and defaults on top, and builds
+images with GitHub Actions (or locally) from package profiles.
 
 > [!WARNING]
 > Experimental firmware for **the Netgear R8000 only** - not the R8000P,
@@ -55,16 +49,10 @@ one is not named "-nss" and does not behave like those two.
 
 ## Hardware acceleration reality
 
-The Linksys MX4300 and Redmi AX3000 repositories this one follows the
-conventions of both run Qualcomm IPQ-series SoCs, where **NSS** (Network
-SubSystem) is a real, documented Qualcomm packet-acceleration engine with
-upstream `kmod-qca-nss-*` driver support - that is why "nss" is in their
-names and why their images offload routing/NAT/Wi-Fi onto dedicated silicon.
-
-**The R8000 uses a Broadcom BCM4709A0 SoC. There is no NSS, and no official,
-mainline-supported hardware NAT/packet-offload block at all, on this
-platform.** Broadcom's own proprietary CTF (Cut-Through Forwarding) and newer
-FA (Flow Accelerator) exist on this chip family, but:
+**The R8000 uses a Broadcom BCM4709A0 SoC, which has no official,
+mainline-supported hardware NAT/packet-offload driver in upstream OpenWrt.**
+Broadcom's own proprietary CTF (Cut-Through Forwarding) and newer FA (Flow
+Accelerator) exist on this chip family, but:
 
 - CTF is legacy, closed, and has no mainline/OpenWrt driver for this target.
 - FA has an **unmerged** community reimplementation
@@ -107,6 +95,11 @@ why this is BCM43602, not the BCM4366 sometimes associated with this router.
 - **A radio watchdog** (`overlays/common`): reacts to known `brcmfmac`
   firmware-wedge log signatures by escalating `wifi reload` -> a module
   reload -> a rate-limited reboot. See [docs/known-issues.md](docs/known-issues.md).
+- **Modernized LuCI web UI** (`configs/base.packages`, `overlays/common`):
+  ships LuCI over HTTPS with the official **Footstrap** theme
+  (`luci-theme-footstrap`, set as the default once on fresh installs or
+  routers still on Bootstrap, while preserving any custom theme choice) and
+  **LuCI Dashboard** (`luci-mod-dashboard`) as the landing status page.
 - **Every real dependency of antoniocosta/unifi-openwrt** (`configs/r8000.config`,
   `configs/base.packages`): full `wpad`, `hostapd-utils`, `kmod-nft-bridge`,
   `kmod-veth`. unifi-openwrt itself is installed after first boot, following
@@ -114,17 +107,10 @@ why this is BCM43602, not the BCM4366 sometimes associated with this router.
   why and exactly how.
 - **Deliberately not included on `main`**: hardware packet offload
   ([docs/ctf-fa.md](docs/ctf-fa.md)) and CPU overclocking
-  ([docs/overclock.md](docs/overclock.md)) - both investigated twice (most
-  recently 2026-11-22, digging into mainline Linux source for overclocking
-  and the actual PR diff/history for offload), neither safe to ship on
-  `main` the way this repository's two reference repositories ship their own
-  SoC-specific versions of these features. Overclocking has no mechanism to
-  attach to anywhere upstream, full stop. Hardware offload has a small,
-  plausible, R8000-specific patch now written and committed - but only on
-  the separate, non-default **`experimental/bcm53xx-hw-offload`** branch,
-  untested, with no automation that can build or flash it without a person
-  deliberately choosing that branch. Read those two documents before
-  assuming either is just "missing."
+  ([docs/overclock.md](docs/overclock.md)) - neither is safe to enable by
+  default on `main`. Hardware offload lives on the separate
+  **`experimental/bcm53xx-hw-offload`** branch; read those two documents for
+  the full technical rationale.
 
 ## Hardware
 
@@ -161,14 +147,10 @@ backup first if your stock firmware's web UI offers one.
    Flash Firmware*, keeping settings. Compare the SHA256 LuCI shows against
    the release's `sha256sums`.
 
-**This firmware has no A/B partition or trial-boot mechanism** (unlike the
-two repositories this one follows the conventions of, whose SoCs' own
-bootloaders support it) - a bad flash is recovered the way any OpenWrt router
-on this hardware is, via [Recovery](#recovery) below, not via an automatic
-rollback. **This release is not cryptographically signed** for the same
-reason those two repositories sign theirs (a trusted update path into an
-automatic rollback) does not apply here; verify `sha256sums` yourself before
-flashing.
+**This firmware has no A/B partition or trial-boot mechanism** - a bad flash
+is recovered via [Recovery](#recovery) below, not via an automatic rollback.
+**Releases are not cryptographically signed**; verify `sha256sums` yourself
+before flashing.
 
 ## Upgrading
 
@@ -187,7 +169,7 @@ specific config files - back up first regardless.
 | Layer | File | Contents |
 |---|---|---|
 | Base | `configs/r8000.config` | Target selection, full `wpad` (not `wpad-basic-*`, a hard unifi-openwrt requirement) |
-| Every profile | `configs/base.packages` | LuCI, unifi-openwrt's remaining real dependencies (`hostapd-utils`, `kmod-nft-bridge`, `kmod-veth`), SQM, diagnostics |
+| Every profile | `configs/base.packages` | LuCI (`luci-ssl-openssl`, `luci-theme-footstrap`, `luci-mod-dashboard`), unifi-openwrt's remaining real dependencies (`hostapd-utils`, `kmod-nft-bridge`, `kmod-veth`), SQM, diagnostics |
 | One profile | `profiles/<name>.packages` | What that profile adds or leaves out |
 
 Profiles in this repository:
@@ -254,13 +236,12 @@ release:
 - **publish:** `testing` (a pre-release), `stable`, or `none` (images only as
   a workflow artifact).
 
-**Automatic builds.** Every day the workflow runs `scripts/bump-upstream.sh`:
-unlike the two repositories this one follows, there is no third-party
-builder's own releases to track - it simply moves `OPENWRT_COMMIT` (and the
-official feeds) to the current tip of `openwrt-25.12`. If anything moved, or
-this repository has commits since the newest release (other than the
-workflow's own pin commits), it builds and validates both profiles, publishes
-them on the **testing** channel, and commits the new pins.
+**Automatic builds.** Every day the workflow runs `scripts/bump-upstream.sh`,
+moving `OPENWRT_COMMIT` (and the official feeds) to the current tip of
+`openwrt-25.12`. If anything moved, or this repository has commits since the
+newest release (other than the workflow's own pin commits), it builds and
+validates both profiles, publishes them on the **testing** channel, and
+commits the new pins.
 
 **When upstream moves under the patches.** If `patches/0001` or `0002` no
 longer apply because upstream changed lines next to them, `scripts/build.sh`
@@ -343,17 +324,10 @@ tools/validate-images.sh   static checks of the images
   documented in `docs/known-issues.md`.
 - **[antoniocosta/unifi-openwrt](https://github.com/antoniocosta/unifi-openwrt)** -
   the UniFi-adoption agent this build's packages exist to support.
-- **egc112 and strrs** - the FA/CTF offload investigation in
+- **egc112 and strrs** - the FA/CTF offload implementation in
   [openwrt/openwrt#26789](https://github.com/openwrt/openwrt/pull/26789),
-  read in full (diff, commit history and provenance record) for
-  `docs/ctf-fa.md`; `main` does not include it, but their branch is the base
-  the `experimental/bcm53xx-hw-offload` branch's R8000 patch is pinned on top
-  of.
-- **[IcySakura/linksys-mx4300-openwrt-nss](https://github.com/IcySakura/linksys-mx4300-openwrt-nss)**
-  and **[IcySakura/redmi-ax3000-openwrt-nss](https://github.com/IcySakura/redmi-ax3000-openwrt-nss)** -
-  the repository conventions (structure, scripts, documentation style) this
-  one follows, adapted for a different SoC vendor with no NSS-equivalent
-  hardware offload.
+  which `docs/ctf-fa.md` documents and `experimental/bcm53xx-hw-offload` builds
+  upon.
 
 ## License
 
