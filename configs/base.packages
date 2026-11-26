@@ -1,8 +1,13 @@
 # Packages in every profile (see scripts/profile.sh and profiles/*.packages).
 
-# Web UI
+# Web UI: LuCI over HTTPS with the Footstrap theme (set as the default once
+# on routers still on Bootstrap via overlays/common/etc/uci-defaults/99-default-theme)
+# and LuCI's modern Dashboard status landing page. A profile can opt out of
+# either with "-luci-theme-footstrap" or "-luci-mod-dashboard".
 luci
 luci-ssl-openssl
+luci-theme-footstrap
+luci-mod-dashboard
 
 # antoniocosta/unifi-openwrt's real, non-wpad dependencies (see
 # docs/unifi-adoption.md): hostapd-utils for its runtime client deny list,

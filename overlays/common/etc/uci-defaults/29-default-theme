@@ -1,0 +1,7 @@
+#!/bin/sh
+# Remember the theme configured before individual theme uci-defaults
+# (30_luci-theme-*) run, since some themes set themselves as the default on
+# first install. 99-default-theme uses this snapshot to decide whether to
+# switch the router to Footstrap.
+uci -q get luci.main.mediaurlbase > /tmp/.theme-before-uci-defaults
+exit 0
