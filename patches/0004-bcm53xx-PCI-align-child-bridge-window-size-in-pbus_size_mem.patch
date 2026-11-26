@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Myles Liu <lyx981mike@gmail.com>
+Date: Wed, 25 Nov 2026 23:15:00 -0800
+Subject: [PATCH] bcm53xx: PCI: align child bridge window size in pbus_size_mem
+
+On kernel 6.18, the Netgear R8000's second 5 GHz BCM43602 radio (0001:04:00.0,
+behind PLX PEX8603 switch 0001:01:00.0) fails to probe with BAR assignment
+errors ("bridge window [mem size 0x00500000]: can't assign; no space").
+
+Both downstream ports (0001:02:01.0 and 0001:02:02.0) require 5 MiB windows
+aligned to 4 MiB. pbus_size_mem() summed max(5 MiB, 4 MiB) = 10 MiB for the
+parent switch, leaving no room for the second 4 MiB-aligned 5 MiB window at
++8 MiB. Rounding r_size up to ALIGN(r_size, align) gives 8 + 8 = 16 MiB and
+restores all three BCM43602 radios on kernel 6.18.
+---
+ ...lign-child-bridge-window-size-in-pbus_size_mem.patch | 26 +++++++++++++++++
+ 1 file changed, 26 insertions(+)
+ create mode 100644 target/linux/bcm53xx/patches-6.18/399-PCI-align-child-bridge-window-size-in-pbus_size_mem.patch
+
+diff --git a/target/linux/bcm53xx/patches-6.18/399-PCI-align-child-bridge-window-size-in-pbus_size_mem.patch b/target/linux/bcm53xx/patches-6.18/399-PCI-align-child-bridge-window-size-in-pbus_size_mem.patch
+new file mode 100644
+index 0000000000..1111111111
+--- /dev/null
++++ b/target/linux/bcm53xx/patches-6.18/399-PCI-align-child-bridge-window-size-in-pbus_size_mem.patch
+@@ -0,0 +1,26 @@
++From: Myles Liu <lyx981mike@gmail.com>
++Subject: [PATCH] PCI: account for alignment padding when child bridge window size exceeds alignment
++
++In pbus_size_mem(), a downstream PCI-to-PCI bridge whose memory window size
++exceeds its required alignment (e.g. two 5 MiB child bridge windows each
++requiring 4 MiB alignment behind a PLX PEX8603 switch, as on the Netgear
++R8000's PCIe bus 1 carrying two BCM43602 radios) leaves an unaligned tail
++gap before the next sibling window can be placed.
++
++Round r_size up to a multiple of align so sibling windows that exceed their
++alignment still fit inside the parent bridge window. Standard BARs with
++r_size <= align are unaffected (ALIGN(r_size, align) == align).
++
++Signed-off-by: Myles Liu <lyx981mike@gmail.com>
++---
++--- a/drivers/pci/setup-bus.c
+++++ b/drivers/pci/setup-bus.c
++@@ -1341,7 +1341,7 @@ static void pbus_size_mem(struct pci_bus
++ 				r->flags = 0;
++ 				continue;
++ 			}
++-			size += max(r_size, align);
+++			size += max(ALIGN(r_size, align), align);
++ 
++ 			/*
++ 			 * If resource's size is larger than its alignment,

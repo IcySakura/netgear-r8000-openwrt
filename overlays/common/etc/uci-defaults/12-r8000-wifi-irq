@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable Wi-Fi IRQ balancing across CPU0 (pcie0) and CPU1 (pcie1).
+[ -x /etc/init.d/r8000-wifi-irq ] && /etc/init.d/r8000-wifi-irq enable
+exit 0

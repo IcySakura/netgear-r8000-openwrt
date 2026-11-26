@@ -4,7 +4,37 @@ You are reading this because you checked out, or are considering building,
 the `experimental/bcm53xx-hw-offload` branch. It does not build the same
 thing as `main`. Read this whole document first.
 
-## Status 2026-11-24: built and flashed once - read this first
+## Status 2026-11-25: verified working on real Netgear R8000 hardware
+
+- **Hardware Flow Accelerator (`bgmac-fa`) confirmed working:** Booted with
+  `flow_offloading=1` and `flow_offloading_hw=1`; `99_20_flow_accel` switched
+  `eth0` and `eth2` to `brcm-prepend`, b53 installed the trap rules on port 5
+  (`flow accelerator traps to port 5`), and `bgmac_bcma bcma0:5` logged
+  `flow accelerator in the path (prepended tag)`.
+- **Measured live `[HW_OFFLOAD]` throughput & CPU (kernel 6.18.64, 2 Gbps IMP
+  port 8 + 2.5 Gbps AMAC patches `080`/`081` active):**
+  - 1500B routed TCP (1 stream): **940 Mbit/s, 0 retransmits, 99.8% CPU idle**
+    (0.0% softirq, 20 `eth2` IRQs in 8s while forwarding 506k packets).
+  - 1500B SNAT/NAT TCP (1 stream): **941 Mbit/s, 0 retransmits, 100.0% CPU
+    idle** (0.0% softirq, 16 `eth2` IRQs in 6s).
+  - MSS 300 (~340B packets) routed TCP: **742 Mbit/s (~393k pps), 99.9% CPU
+    idle** (vs 296 Mbit/s @ ~80% CPU with software offload + fixed RPS, or
+    102 Mbit/s @ 100% CPU0 with no offload).
+  - Double-NAT hairpins (`snat && dnat` on the same packet) fall back cleanly
+    to software flowtable offload (`[OFFLOAD]`), as Northstar FA hardware has
+    one NAT slot per flow entry.
+- **Fixed kernel 6.18 3rd Wi-Fi radio PCIe BAR bug (`patches/0004`):** On
+  stock kernel 6.18, `pbus_size_mem()` summed `5 MiB + 5 MiB = 10 MiB` for the
+  PLX PEX8603 switch (`0001:01:00.0`) carrying two 4 MiB-aligned 5 MiB child
+  bridge windows (`0001:02:01.0` and `0001:02:02.0`), causing `0001:04:00.0`
+  (second 5 GHz BCM43602 radio) to fail BAR assignment (`err -22`). Patching
+  `pbus_size_mem()` to `size += max(ALIGN(r_size, align), align)` restores all
+  three radios (`phy0`, `phy1`, `phy2`).
+- **Wi-Fi IRQ balancing (`overlays/common/etc/init.d/r8000-wifi-irq`):** Pins
+  `pcie0` (`brcmf_pcie_intr`, 5 GHz High) to CPU0 and `pcie1` (PLX switch
+  carrying 2.4 GHz + 5 GHz Low) to CPU1.
+
+## Status 2026-11-24: built and flashed once (historical)
 
 - Re-pinned to the PR head `e124ccf5d7` (2026-11-24). Since that head the PR
   keeps `brcm-prepend` out of device trees (a preinit hook switches the tag
