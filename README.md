@@ -16,6 +16,7 @@ OpenWrt build recipe for the **Netgear R8000** with board-specific Wi-Fi fixes, 
 |---|---|
 | Builds (compiles, patches apply, packages resolve) | Tested |
 | 5 GHz NVRAM fix (`patches/0001`) & multi-SSID fallback (`patches/0002`) | Tested |
+| BCM43602 offloads, hardware DFS, live survey & WPA3-SAE (`patches/0005`, `tools/bcm43602-sae-patch`) | Tested (driver + Cortex-R4 TCAM patch; client WPA3 handshake test pending) |
 | Kernel 6.18 3rd Wi-Fi radio PCIe BAR fix (`patches/0004`) | Tested |
 | Broadcom Northstar Hardware Flow Accelerator (`patches/0003`) | Tested (~940 Mbit/s @ ~100% CPU idle, 742 Mbit/s @ MSS 300) |
 | Wi-Fi IRQ balancing (`r8000-wifi-irq`) | Tested |
@@ -27,6 +28,7 @@ OpenWrt build recipe for the **Netgear R8000** with board-specific Wi-Fi fixes, 
 
 - **5 GHz radio fix (`patches/0001`):** Adds the R8000's BCM43602 board-ID entries to `nvram-bcm53xx.init`.
 - **Multi-SSID / guest-network fix (`patches/0002`):** Enables `brcmfmac`'s legacy MBSS fallback for BCM43602 firmware `7.35.177.56`.
+- **BCM43602 Cortex-R4 modernization (`patches/0005`, `tools/bcm43602-sae-patch`):** Enables hardware Airtime Fairness (`taf`), 802.11e QBSS Load IE (`bssload`), 2.4 GHz explicit HT beamforming + 256-QAM (`txbf_ht_enable`, `vht_features`), live non-disruptive airtime/noise survey (`chanim_stats` v2 → `dump_survey`), hardware-offloaded DFS (`wlc_dfs` + `phy_radar`), and a source-built Cortex-R4 TCAM firmware patch for WPA3-SAE + H2E + 802.11w PMF with hardware AES-CCMP/BIP offload. See [docs/bcm43602-modernization.md](docs/bcm43602-modernization.md).
 - **Hardware Flow Accelerator (`patches/0003`):** Enables switch port 5 as the Northstar Flow Accelerator trap port alongside 2 Gbps IMP0 port 8 (`eth2`). See [docs/experimental-hw-offload-branch.md](docs/experimental-hw-offload-branch.md).
 - **3rd Wi-Fi radio PCIe BAR fix (`patches/0004`):** Fixes kernel 6.18 `pbus_size_mem()` window sizing for the PLX switch so all three BCM43602 radios initialize.
 - **Wi-Fi IRQ balancing (`overlays/common`):** Pins `pcie0` (5 GHz High) to CPU0 and `pcie1` (2.4 GHz + 5 GHz Low) to CPU1.
@@ -97,10 +99,11 @@ configs/r8000.config       base diffconfig (target, full wpad)
 configs/base.packages      packages included in every profile
 profiles/                  package profiles (default, minimal)
 overlays/common/           root filesystem overlay (UI defaults, offload, IRQ, SQM, watchdog)
-docs/                      ctf-fa.md, overclock.md, unifi-adoption.md, known-issues.md,
+docs/                      bcm43602-modernization.md, ctf-fa.md, overclock.md,
+                           unifi-adoption.md, known-issues.md,
                            experimental-hw-offload-branch.md
 scripts/                   build.sh, bump-upstream.sh, profile.sh, router-packages.sh
-tools/validate-images.sh   static image checks
+tools/                     validate-images.sh, bcm43602-sae-patch/
 .github/workflows/         GitHub Actions build and release
 ```
 

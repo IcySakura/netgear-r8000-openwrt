@@ -150,6 +150,24 @@ for PROFILE in "${PROFILES[@]}"; do
 
 	rm -f "$BIN"/*netgear_r8000*
 	make -j"$JOBS" download
+	if [ -f "$TOP/tools/bcm43602-sae-patch/patch_fw.py" ]; then
+		make -j"$JOBS" tools/install toolchain/install package/firmware/linux-firmware/compile
+		TC_BIN=$(echo staging_dir/toolchain-*/bin)
+		STOCK_FW=$(echo staging_dir/target-*/root-bcm53xx/lib/firmware/brcm/brcmfmac43602-pcie.bin)
+		if [ -f "$STOCK_FW" ]; then
+			PATCH_TMP=$(mktemp -d)
+			STAGING_DIR="$SRC/staging_dir" "$TC_BIN"/*-gcc -mcpu=cortex-r4 -mthumb -Os \
+				-ffreestanding -nostdlib -fno-builtin -fno-pie -fno-stack-protector \
+				-T "$TOP/tools/bcm43602-sae-patch/sae_patch.ld" \
+				"$TOP/tools/bcm43602-sae-patch/sae_patch.c" -o "$PATCH_TMP/sae_patch.elf"
+			"$TC_BIN"/*-objcopy -O binary "$PATCH_TMP/sae_patch.elf" "$PATCH_TMP/sae_patch.bin"
+			mkdir -p files/lib/firmware/brcm
+			python3 "$TOP/tools/bcm43602-sae-patch/patch_fw.py" \
+				"$STOCK_FW" "$PATCH_TMP/sae_patch.elf" "$PATCH_TMP/sae_patch.bin" \
+				"$(echo "$TC_BIN"/*-nm)" files/lib/firmware/brcm/brcmfmac43602-pcie.bin
+			rm -rf "$PATCH_TMP"
+		fi
+	fi
 	make -j"$JOBS" || make -j1 V=s
 
 	dest=$OUT/$PROFILE
