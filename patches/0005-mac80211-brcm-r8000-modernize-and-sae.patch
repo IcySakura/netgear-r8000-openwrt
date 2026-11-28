@@ -1,31 +1,38 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Myles Liu <lyx981mike@gmail.com>
-Date: Fri, 27 Nov 2026 13:20:53 -0800
-Subject: [PATCH] mac80211: brcm: modernize BCM43602 offloads, DFS, survey, and
- SAE
+Date: Fri, 27 Nov 2026 21:02:50 -0800
+Subject: [PATCH] mac80211: brcm: modernize BCM43602 offloads, DFS, survey,
+ MBSS, country, and SAE
 
-Add patch 880 enabling BCM43602 hardware-offloaded features on R8000:
+Add patch 880 enabling BCM43602 hardware-offloaded features and fixes on R8000:
+- Match "mbss4" and "mbss16" in brcmf_fwcap_map[] (fixing RPi patch 870-09
+  breaking multi-SSID AP combinations on BCM43602)
+- Fall back to ISO-3166 rev 0 when a regulatory country (e.g. AU, DE, GB)
+  is not listed in DTS ccode-map, and allow DTS ccode/rev overrides
 - Live airtime & noise survey via chanim_stats v2 (dump_survey)
 - 2.4 GHz explicit HT beamforming (txbf_ht_enable=1) and 256-QAM (vht_features=3)
 - 802.11e QBSS Load IE (bssload=1) and Cortex-R4 Airtime Fairness (taf)
 - Hardware-offloaded DFS (radar_detect_widths + WLC_SET_RADAR/SPECT)
 - Auto-detected WPA3-SAE external auth support for the Cortex-R4 SAE patch
-- Allow DTS country ccode/rev overrides when country_abbrev matches NVRAM
 ---
- ...880-brcmfmac-r8000-modernize-and-sae.patch | 391 ++++++++++++++++++
- 1 file changed, 391 insertions(+)
+ ...880-brcmfmac-r8000-modernize-and-sae.patch | 420 ++++++++++++++++++
+ 1 file changed, 420 insertions(+)
  create mode 100644 package/kernel/mac80211/patches/brcm/880-brcmfmac-r8000-modernize-and-sae.patch
 
 diff --git a/package/kernel/mac80211/patches/brcm/880-brcmfmac-r8000-modernize-and-sae.patch b/package/kernel/mac80211/patches/brcm/880-brcmfmac-r8000-modernize-and-sae.patch
 new file mode 100644
-index 0000000000..8b35727c42
+index 0000000000..8f2100c505
 --- /dev/null
 +++ b/package/kernel/mac80211/patches/brcm/880-brcmfmac-r8000-modernize-and-sae.patch
-@@ -0,0 +1,391 @@
+@@ -0,0 +1,420 @@
 +From: Myles Liu <lyx981mike@gmail.com>
-+Subject: [PATCH] brcmfmac: modernize BCM43602 offloads, DFS, survey, and SAE external auth
++Subject: [PATCH] brcmfmac: modernize BCM43602 offloads, DFS, survey, MBSS, country, and SAE
 +
-+Enable hardware-offloaded modern Wi-Fi features on BCM43602 (7.35.177.56):
++Enable hardware-offloaded modern Wi-Fi features and fixes on BCM43602 (7.35.177.56):
++- Match "mbss4" / "mbss16" in brcmf_fwcap_map[] (broken by 870-09 exact word match)
++- Fall back to ISO-3166 rev 0 in brcmf_translate_country_code() when a country
++  (e.g. AU, DE, GB) is not listed in the board DTS ccode-map, and allow DTS
++  ccode/rev overrides even when country_abbrev matches NVRAM
 +- Non-disruptive live airtime and noise telemetry via chanim_stats v2
 +  (monotonic cumulative survey counters for dump_survey / iwinfo / UniFi)
 +- 2.4 GHz explicit HT beamforming (txbf_ht_enable=1) and 256-QAM (vht_features=3)
@@ -35,8 +42,6 @@ index 0000000000..8b35727c42
 +- Auto-detected WPA3-SAE external auth support (sae_rsnie + RSNXE H2E, sae_tx,
 +  BRCMF_E_AUTH_IND relay, NL80211_FEATURE_SAE) when paired with the Cortex-R4
 +  TCAM SAE firmware patch; gracefully inactive on stock firmware
-+- Allow brcmf_translate_country_code() to apply DTS ccode/rev overrides even
-+  when country_abbrev matches the NVRAM boot default
 +
 +Signed-off-by: Myles Liu <lyx981mike@gmail.com>
 +---
@@ -247,21 +252,37 @@ index 0000000000..8b35727c42
 + 		if (brmcf_use_iso3166_ccode_fallback(drvr)) {
 + 			brcmf_dbg(TRACE, "No country codes configured for device, using ISO3166 code and 0 rev\n");
 + 			memset(ccreq, 0, sizeof(*ccreq));
-+@@ -8046,6 +8155,13 @@
-+ 		brcmf_dbg(TRACE, "No country code match found\n");
-+ 		return -EINVAL;
++@@ -8043,8 +8152,27 @@
++ 		}
 + 	}
++ 	if (found_index == -1) {
++-		brcmf_dbg(TRACE, "No country code match found\n");
++-		return -EINVAL;
+++		if ((alpha2[0] == ccreq->country_abbrev[0]) &&
+++		    (alpha2[1] == ccreq->country_abbrev[1]) &&
+++		    !strncmp(ccreq->ccode, alpha2, 2)) {
+++			brcmf_dbg(TRACE, "Country code already set\n");
+++			return -EAGAIN;
+++		}
+++		brcmf_dbg(TRACE, "No country code match found, falling back to ISO3166 %c%c rev 0\n",
+++			  alpha2[0], alpha2[1]);
+++		memset(ccreq, 0, sizeof(*ccreq));
+++		ccreq->country_abbrev[0] = alpha2[0];
+++		ccreq->country_abbrev[1] = alpha2[1];
+++		ccreq->ccode[0] = alpha2[0];
+++		ccreq->ccode[1] = alpha2[1];
+++		return 0;
+++	}
 ++	if ((alpha2[0] == ccreq->country_abbrev[0]) &&
 ++	    (alpha2[1] == ccreq->country_abbrev[1]) &&
 ++	    !strncmp(ccreq->ccode, country_codes->table[found_index].cc, 2) &&
 ++	    le32_to_cpu(ccreq->rev) == country_codes->table[found_index].rev) {
 ++		brcmf_dbg(TRACE, "Country code already set\n");
 ++		return -EAGAIN;
-++	}
++ 	}
 + 	memset(ccreq, 0, sizeof(*ccreq));
 + 	ccreq->rev = cpu_to_le32(country_codes->table[found_index].rev);
-+ 	memcpy(ccreq->ccode, country_codes->table[found_index].cc,
-+@@ -8185,6 +8301,103 @@
++@@ -8185,6 +8313,103 @@
 + 	return err;
 + }
 + 
@@ -365,7 +386,7 @@ index 0000000000..8b35727c42
 + static int
 + brcmf_cfg80211_dump_survey(struct wiphy *wiphy, struct net_device *ndev,
 + 			   int idx, struct survey_info *info)
-+@@ -8448,8 +8661,17 @@
++@@ -8448,8 +8673,17 @@
 + 		ops->set_rekey_data = brcmf_cfg80211_set_rekey_data;
 + #endif
 + #if !defined(CONFIG_ARCH_BCM2835)
@@ -413,3 +434,14 @@ index 0000000000..8b35727c42
 + done:
 + 	return err;
 + }
++--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/feature.c
+++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/feature.c
++@@ -36,6 +36,8 @@
++ 
++ static const struct brcmf_feat_fwcap brcmf_fwcap_map[] = {
++ 	{ BRCMF_FEAT_MBSS, "mbss" },
+++	{ BRCMF_FEAT_MBSS, "mbss4" },
+++	{ BRCMF_FEAT_MBSS, "mbss16" },
++ 	{ BRCMF_FEAT_MCHAN, "mchan" },
++ 	{ BRCMF_FEAT_P2P, "p2p" },
++ 	{ BRCMF_FEAT_MONITOR, "monitor" },
